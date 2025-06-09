@@ -156,34 +156,40 @@ async function fetchPerplexityStream({ messages, apiKey, model }) {
   let onDone = () => {};
 
   async function processStream() {
-    while (!done) {
-      const { value, done: d } = await reader.read();
-      done = d;
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      // Perplexity streams JSON lines, one per delta
-      let lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (let line of lines) {
-        line = line.trim();
-        if (!line) continue;
-        try {
-          const data = JSON.parse(line);
-          if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
-            onData(data.choices[0].delta.content);
+    try {
+      while (!done) {
+        const { value, done: d } = await reader.read();
+        done = d;
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        // Perplexity streams JSON lines, one per delta
+        let lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
+          try {
+            const data = JSON.parse(line);
+            if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+              onData(data.choices[0].delta.content);
+            }
+          } catch (e) {
+            // ignore malformed lines
           }
-        } catch (e) {
-          // ignore malformed lines
         }
       }
+      onDone();
+    } catch (err) {
+      onError(err);
     }
-    onDone();
   }
-  setTimeout(processStream, 0);
-  return {
-    onData: fn => { onData = fn; return this; },
-    onError: fn => { onError = fn; return this; },
-    onDone: fn => { onDone = fn; return this; }
+
+  const api = {
+    onData: fn => { onData = fn; return api; },
+    onError: fn => { onError = fn; return api; },
+    onDone: fn => { onDone = fn; return api; }
   };
+  setTimeout(processStream, 0);
+  return api;
 }
 
 // Compose system prompt based on project mode
@@ -270,18 +276,21 @@ chatForm.onsubmit = async function(e) {
       apiKey: settings.apiKey,
       model: settings.model
     });
-    stream.onData(chunk => {
-      aiContent += chunk;
-      typingBubble.innerHTML = renderMarkdown(aiContent);
-      scrollChatToBottom();
-    }).onDone(() => {
-      typingBubble.classList.remove('typing');
-      isStreaming = false;
-    }).onError(err => {
-      typingBubble.innerHTML = `<span style="color:#e00;">Error: ${err.message}</span>`;
-      typingBubble.classList.remove('typing');
-      isStreaming = false;
-    });
+    stream
+      .onData(chunk => {
+        aiContent += chunk;
+        typingBubble.innerHTML = renderMarkdown(aiContent);
+        scrollChatToBottom();
+      })
+      .onDone(() => {
+        typingBubble.classList.remove('typing');
+        isStreaming = false;
+      })
+      .onError(err => {
+        typingBubble.innerHTML = `<span style="color:#e00;">Error: ${err.message}</span>`;
+        typingBubble.classList.remove('typing');
+        isStreaming = false;
+      });
   } catch (err) {
     typingBubble.innerHTML = `<span style="color:#e00;">${err.message}</span>`;
     typingBubble.classList.remove('typing');
