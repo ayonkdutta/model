@@ -17,10 +17,10 @@
       <!-- Chat messages will appear here -->
     </main>
 
-    <form id="chatForm" class="chat-input-area">
+    <form id="chatForm" class="chat-input-area" autocomplete="off">
       <label class="file-upload-label" title="Attach file(s)">
         <input type="file" id="fileInput" multiple accept="image/*,.pdf,.doc,.docx,.txt" />
-        <span>📎</span>
+        <span>&#128206;</span> <!-- Paperclip icon as Unicode -->
       </label>
       <textarea id="userInput" placeholder="Type your message..." rows="1" required></textarea>
       <button type="submit" id="sendBtn">Send</button>
