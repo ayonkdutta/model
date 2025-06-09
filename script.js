@@ -7,6 +7,7 @@ function loadLocal(key, fallback) {
 }
 
 // === Settings Modal Logic ===
+window.addEventListener('DOMContentLoaded', function() {
 const settingsBtn = $('#settingsBtn');
 const settingsModal = $('#settingsModal');
 const closeSettings = $('#closeSettings');
@@ -49,7 +50,7 @@ function saveSettings() {
   hideSettings();
 }
 saveSettingsBtn.onclick = () => { saveSettings(); };
-window.addEventListener('DOMContentLoaded', loadSettings);
+loadSettings();
 
 // === Chat Logic ===
 const chatWindow = $('#chatWindow');
@@ -79,4 +80,227 @@ function addMessage({ role, content, files = [], isTyping = false }) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble' + (isTyping ? ' typing' : '');
   if (role === 'ai') {
-    bubble
+    bubble.innerHTML = renderMarkdown(content);
+  } else {
+    bubble.textContent = content;
+  }
+  msg.appendChild(bubble);
+
+  // Show attached files (images or names)
+  if (files && files.length) {
+    const fileList = document.createElement('div');
+    fileList.className = 'file-list';
+    files.forEach(f => {
+      if (f.type.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = f.preview || '';
+        img.alt = f.name;
+        fileList.appendChild(img);
+      } else {
+        const span = document.createElement('span');
+        span.textContent = `📄 ${f.name}`;
+        fileList.appendChild(span);
+      }
+    });
+    bubble.appendChild(fileList);
+  }
+
+  chatWindow.appendChild(msg);
+  scrollChatToBottom();
+  return bubble;
+}
+
+// Typing animation
+function showTyping() {
+  return addMessage({ role: 'ai', content: '...', isTyping: true });
+}
+function removeTyping(bubble) {
+  if (bubble && bubble.parentNode) bubble.parentNode.remove();
+}
+
+// File handling
+let attachedFiles = [];
+fileInput.onchange = function() {
+  attachedFiles = Array.from(fileInput.files).map(f => {
+    if (f.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = e => { f.preview = e.target.result; };
+      reader.readAsDataURL(f);
+    }
+    return f;
+  });
+};
+
+// Prepare Perplexity API call with streaming disabled
+async function fetchPerplexityStream({ messages, apiKey, model }) {
+  const url = "https://api.perplexity.ai/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${apiKey}",
+    "Content-Type": "application/json"
+  };
+  const body = JSON.stringify({
+    model,
+    messages,
+    stream: false  // Streaming disabled due to API issues
+  });
+
+  const response = await fetch(url, { method: "POST", headers, body });
+  if (!response.ok) throw new Error(`API error: ${response.status}`);
+
+  const data = await response.json();
+  const content = data.choices[0].message.content;
+
+  // Immediately show the full response
+  let onData = () => {};
+  let onDone = () => {};
+  let onError = () => {};
+
+  // Return an object with onData, onDone, onError methods for compatibility
+  const api = {
+    onData: fn => { onData = fn; return api; },
+    onError: fn => { onError = fn; return api; },
+    onDone: fn => { onDone = fn; return api; }
+  };
+
+  setTimeout(() => {
+    onData(content);
+    onDone();
+  }, 0);
+
+  return api;
+}
+
+// Compose system prompt based on project mode
+function getSystemPrompt(settings) {
+  let prompt = settings.systemPrompt;
+  if (settings.projectMode === 'model-brand') {
+    prompt += "\nYou assist with model-brand compatibility. When the user uploads a model image and details (ethnicity, measurements), analyze compatibility with brands and suggest best matches. Respond in Markdown.";
+  } else if (settings.projectMode === 'contracts') {
+    prompt += "\nYou assist with contract simplification and compliance for model agencies, especially mother agent contracts. Provide concise, actionable advice. Respond in Markdown.";
+  } else if (settings.projectMode === 'hairstyles') {
+    prompt += "\nYou are a fashion and hair trends expert. When the user uploads a model image and brand type, suggest on-trend hairstyles that fit the model and brand. Respond in Markdown.";
+  }
+  return prompt;
+}
+
+// Main chat submit handler
+chatForm.onsubmit = async function(e) {
+  e.preventDefault();
+  if (isStreaming) return;
+  const settings = {
+    apiKey: apiKeyInput.value.trim(),
+    model: modelSelect.value,
+    systemPrompt: getSystemPrompt({
+      systemPrompt: systemPromptInput.value,
+      projectMode: projectModeSelect.value
+    }),
+    projectMode: projectModeSelect.value
+  };
+  if (!settings.apiKey) {
+    alert("Please enter your Perplexity API key in settings.");
+    showSettings();
+    return;
+  }
+  let userMsg = userInput.value.trim();
+  if (!userMsg && !attachedFiles.length) return;
+
+  // Attach files to message (show in chat)
+  let filesToShow = [];
+  for (let f of attachedFiles) {
+    if (f.type.startsWith('image/')) {
+      // Wait for preview to be loaded
+      if (!f.preview) {
+        await new Promise(res => {
+          const reader = new FileReader();
+          reader.onload = e => { f.preview = e.target.result; res(); };
+          reader.readAsDataURL(f);
+        });
+      }
+    }
+    filesToShow.push({
+      name: f.name,
+      type: f.type,
+      preview: f.preview || null
+    });
+  }
+
+  addMessage({ role: 'user', content: userMsg, files: filesToShow });
+  userInput.value = '';
+  attachedFiles = [];
+  fileInput.value = '';
+
+  // Prepare messages for API
+  let messages = [
+    { role: "system", content: settings.systemPrompt }
+  ];
+  // If files, describe them for the AI
+  if (filesToShow.length) {
+    let desc = filesToShow.map(f => {
+      if (f.type.startsWith('image/')) return `[Image file: ${f.name}]`;
+      else return `[File: ${f.name}]`;
+    }).join(' ');
+    userMsg += `\n\nAttached files: ${desc}`;
+  }
+  messages.push({ role: "user", content: userMsg });
+
+  // Show typing animation
+  isStreaming = true;
+  const typingBubble = showTyping();
+
+  try {
+    let aiContent = '';
+    const stream = await fetchPerplexityStream({
+      messages,
+      apiKey: settings.apiKey,
+      model: settings.model
+    });
+    stream
+      .onData(chunk => {
+        aiContent += chunk;
+        typingBubble.innerHTML = renderMarkdown(aiContent);
+        scrollChatToBottom();
+      })
+      .onDone(() => {
+        typingBubble.classList.remove('typing');
+        isStreaming = false;
+      })
+      .onError(err => {
+        typingBubble.innerHTML = `<span style="color:#e00;">Error: ${err.message}</span>`;
+        typingBubble.classList.remove('typing');
+        isStreaming = false;
+      });
+  } catch (err) {
+    typingBubble.innerHTML = `<span style="color:#e00;">${err.message}</span>`;
+    typingBubble.classList.remove('typing');
+    isStreaming = false;
+  }
+};
+
+// Markdown rendering library (marked.js) via CDN
+(function loadMarked(){
+  if (window.marked) return;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+  document.head.appendChild(s);
+})();
+
+// Auto-expand textarea
+userInput.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = (this.scrollHeight) + 'px';
+});
+
+// Save settings on change
+[apiKeyInput, modelSelect, systemPromptInput, projectModeSelect].forEach(el => {
+  el.addEventListener('change', saveSettings);
+  el.addEventListener('input', saveSettings);
+});
+
+// Keyboard shortcut for settings (Ctrl+,)
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === ',') {
+    e.preventDefault();
+    showSettings();
+  }
+});
+});
